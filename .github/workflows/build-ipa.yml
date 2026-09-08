@@ -19,7 +19,7 @@ jobs:
 
       - name: Compile & run core algorithm tests
         run: |
-          cd ChameleonUltra_iOS
+
           swiftc \
             ChameleonUltra/Core/ChameleonFrame.swift \
             ChameleonUltra/Core/Crypto1.swift \
@@ -47,7 +47,7 @@ jobs:
 
       - name: Build unsigned archive
         run: |
-          cd ChameleonUltra_iOS
+
           xcodebuild \
             -project ChameleonUltra.xcodeproj \
             -scheme ChameleonUltra \
@@ -63,7 +63,7 @@ jobs:
         id: package-unsigned
         if: env.HAS_SIGNING == 'false'
         run: |
-          cd ChameleonUltra_iOS
+
           APP=build/Build/Products/Release-iphoneos/ChameleonUltra.app
           rm -rf Payload
           mkdir -p Payload
@@ -95,7 +95,7 @@ jobs:
           PROFILE_NAME: ${{ secrets.PROFILE_NAME }}
           BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
         run: |
-          cd ChameleonUltra_iOS
+
           APP=build/Build/Products/Release-iphoneos/ChameleonUltra.app
           xcodebuild \
             -project ChameleonUltra.xcodeproj \
@@ -122,8 +122,8 @@ jobs:
         with:
           name: ChameleonUltra-ipa
           path: |
-            ChameleonUltra_iOS/ChameleonUltra-signed.ipa
-            ChameleonUltra_iOS/ChameleonUltra-unsigned.ipa
+            ChameleonUltra-signed.ipa
+            ChameleonUltra-unsigned.ipa
           if-no-files-found: ignore
           compression-level: 0
 
@@ -131,5 +131,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ChameleonUltra-app
-          path: ChameleonUltra_iOS/build/Build/Products/Release-iphoneos/ChameleonUltra.app
+          path: build/Build/Products/Release-iphoneos/ChameleonUltra.app
           if-no-files-found: ignore
