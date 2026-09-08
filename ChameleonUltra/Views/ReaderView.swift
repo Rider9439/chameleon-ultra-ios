@@ -96,6 +96,8 @@ struct ReaderView: View {
 
         let scan = await appState.device.scan14A()
         let uid = scan?.uid ?? []
+        // 等待固件切换/就绪
+        try? await Task.sleep(nanoseconds: 200_000_000)
         let (data, ok) = await appState.device.readBlock(block: blockToRead, keyType: keyType, key: key)
         if ok {
             var lines = ["块 \(blockToRead) (密钥\(keyType == 0x60 ? "A" : "B")): \(data.hexPretty)"]
@@ -109,7 +111,9 @@ struct ReaderView: View {
             }
             resultText = lines.joined(separator: "\n")
         } else {
-            resultText = "读取失败（认证失败或密钥错误）"
+            resultText = uid.isEmpty
+                ? "未发现卡片：请将 IC 卡贴近设备背面天线"
+                : "读取失败（认证失败或密钥错误）"
         }
     }
 
@@ -123,12 +127,14 @@ struct ReaderView: View {
         defer { isReading = false }
 
         guard let scan = await appState.device.scan14A(), !scan.uid.isEmpty else {
-            resultText = "未发现 14A 卡片"
+            resultText = "未发现卡片：请将 IC 卡贴近设备背面天线"
             return
         }
         var blocks: [Int: [UInt8]] = [:]
         var failed = 0
         for block in 0..<64 where MfClassic.isDataBlock(block: block) {
+            // 每块之间留 80ms，避免固件连续读卡掉卡
+            try? await Task.sleep(nanoseconds: 80_000_000)
             let (data, ok) = await appState.device.readBlock(block: block, keyType: keyType, key: key)
             if ok { blocks[block] = data } else { failed += 1 }
         }

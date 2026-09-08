@@ -31,13 +31,17 @@ struct MainTabView: View {
                 .tabItem { Label("读卡", systemImage: "wave.3.right.circle.fill") }
                 .tag(2)
 
+            FenceView()
+                .tabItem { Label("围栏", systemImage: "location.circle.fill") }
+                .tag(3)
+
             LabView()
                 .tabItem { Label("实验室", systemImage: "flask.fill") }
-                .tag(3)
+                .tag(4)
 
             ProfileView()
                 .tabItem { Label("我的", systemImage: "person.crop.circle.fill") }
-                .tag(4)
+                .tag(5)
         }
         .alert("提示", isPresented: $appState.showError) {
             Button("好", role: .cancel) {}
@@ -47,6 +51,8 @@ struct MainTabView: View {
         .onAppear {
             // 恢复围栏监控状态
             appState.geofence.resumeMonitoring()
+            // 自动扫描并连接上次设备
+            appState.autoConnect()
         }
     }
 }

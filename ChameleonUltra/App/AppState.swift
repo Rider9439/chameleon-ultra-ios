@@ -38,7 +38,7 @@ final class AppState: ObservableObject {
         showError = true
     }
 
-    // MARK: - 蓝牙扫描
+    // MARK: - 蓝牙扫描 / 自动连接
 
     func startScan() {
         device.startScan()
@@ -46,5 +46,21 @@ final class AppState: ObservableObject {
 
     func stopScan() {
         device.ble.stopScan()
+    }
+
+    /// 进入前台自动扫描 + 自动连接上次设备（蓝牙未就绪则等待重试）
+    func autoConnect() {
+        guard !device.ble.isConnected, !device.ble.isScanning else { return }
+        // 等待蓝牙就绪（CBCentralManager 状态异步）
+        Task { @MainActor in
+            for _ in 0..<10 {
+                if device.ble.isConnected { return }
+                device.startScan()
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if device.ble.isConnected || device.ble.discoveredPeripherals.contains(where: { $0.peripheral.identifier == BleConnection.lastConnectedID }) {
+                    return
+                }
+            }
+        }
     }
 }

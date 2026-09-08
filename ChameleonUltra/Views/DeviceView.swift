@@ -89,9 +89,15 @@ struct DeviceView: View {
                 .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
             }
             if appState.device.ble.discoveredPeripherals.isEmpty {
-                Text("点击「扫描设备」查找变色龙")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                if appState.device.ble.isScanning {
+                    Text("正在查找变色龙设备，发现后自动连接…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("点击「扫描设备」查找变色龙")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

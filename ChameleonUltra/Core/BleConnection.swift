@@ -3,13 +3,14 @@ import CoreBluetooth
 import Combine
 
 /// BLE 连接层（Nordic UART 服务，已按官方 GUI 源码逐字核对 UUID）
+/// - 全量扫描（不按服务过滤，兼容广播不含 Service UUID 的固件）+ 名称白名单过滤
+/// - 扫描到匹配设备自动连接（记忆上次连接设备）
+/// - 串行命令管线 + 分包发送 + 超时快速失败
 final class BleConnection: NSObject, ObservableObject {
     // Nordic UART（官方 GUI serial_ble.dart 确认）
     static let serviceUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
     static let writeUUID = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
     static let notifyUUID = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
-    // DFU 服务（仅扫描过滤辅助）
-    static let dfuUUID = CBUUID(string: "FE59")
 
     @Published var isScanning = false
     @Published var discoveredPeripherals: [(peripheral: CBPeripheral, rssi: Int)] = []
@@ -17,9 +18,18 @@ final class BleConnection: NSObject, ObservableObject {
     @Published var isConnected = false
     @Published var lastError: String?
 
+    /// 自动连接：扫描到匹配设备即自动连接（默认开启）
+    var autoConnect = true
+
     private var manager: CBCentralManager!
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
+    private var connectTimeoutWork: DispatchWorkItem?
+
+    /// 扫描去重字典：identifier → (peripheral, rssi)
+    private var scanCache: [UUID: (CBPeripheral, Int)] = [:]
+    /// 本次扫描是否已尝试过自动连接（避免反复连接同一批设备）
+    private var autoConnectAttempted = false
 
     /// 串行命令管线
     private let pipeline = DispatchQueue(label: "com.chameleon.ble.pipeline")
@@ -36,14 +46,36 @@ final class BleConnection: NSObject, ObservableObject {
 
     // MARK: - 扫描 / 连接
 
+    /// 上次连接的设备 identifier（UserDefaults 持久化）
+    static var lastConnectedID: UUID? {
+        get {
+            guard let s = UserDefaults.standard.string(forKey: "last_connected_peripheral_id") else { return nil }
+            return UUID(uuidString: s)
+        }
+        set {
+            UserDefaults.standard.set(newValue?.uuidString, forKey: "last_connected_peripheral_id")
+        }
+    }
+
+    /// 设备名称白名单关键词（忽略大小写，命中即视为变色龙设备）
+    static func isChameleon(_ peripheral: CBPeripheral) -> Bool {
+        let name = (peripheral.name ?? "").lowercased()
+        let keywords = ["chameleon", "变色龙", "ultra", "rfid"]
+        return keywords.contains { name.contains($0) }
+    }
+
     func startScan() {
         guard manager.state == .poweredOn else {
             lastError = "蓝牙未开启"
             return
         }
+        stopScan()
         isScanning = true
+        autoConnectAttempted = false
         discoveredPeripherals = []
-        manager.scanForPeripherals(withServices: [Self.serviceUUID, Self.dfuUUID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        scanCache = [:]
+        // 全量扫描：不按 Service UUID 过滤（部分固件广播不携带 UUID）
+        manager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
     }
 
     func stopScan() {
@@ -54,9 +86,19 @@ final class BleConnection: NSObject, ObservableObject {
     func connect(_ peripheral: CBPeripheral) {
         stopScan()
         manager.connect(peripheral, options: nil)
+        // 连接超时保护（15s）
+        connectTimeoutWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.isConnected else { return }
+            self.lastError = "连接超时，请靠近设备重试"
+            self.manager.cancelPeripheralConnection(peripheral)
+        }
+        connectTimeoutWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
     }
 
     func disconnect() {
+        connectTimeoutWork?.cancel()
         if let p = connectedPeripheral {
             manager.cancelPeripheralConnection(p)
         }
@@ -65,7 +107,7 @@ final class BleConnection: NSObject, ObservableObject {
     // MARK: - 发送
 
     /// 发送命令并等待响应（串行、带超时）。响应为 nil 表示超时。
-    func send(_ cmd: ChameleonCmd, data: [UInt8]? = nil, timeout: TimeInterval = 10) async -> ChameleonResponse? {
+    func send(_ cmd: ChameleonCmd, data: [UInt8]? = nil, timeout: TimeInterval = 5) async -> ChameleonResponse? {
         await withCheckedContinuation { continuation in
             pipeline.async { [weak self] in
                 guard let self else {
@@ -146,14 +188,34 @@ extension BleConnection: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        if !discoveredPeripherals.contains(where: { $0.peripheral.identifier == peripheral.identifier }) {
-            discoveredPeripherals.append((peripheral, RSSI.intValue))
+        // 名称白名单过滤：只展示变色龙设备（避免全量扫描污染列表）
+        guard Self.isChameleon(peripheral) || peripheral.identifier == Self.lastConnectedID else { return }
+
+        // 去重 + 更新 RSSI
+        if scanCache[peripheral.identifier] != nil {
+            scanCache[peripheral.identifier] = (peripheral, RSSI.intValue)
+        } else {
+            scanCache[peripheral.identifier] = (peripheral, RSSI.intValue)
+        }
+        discoveredPeripherals = scanCache.values
+            .sorted { $0.1 > $1.1 }
+            .map { ($0.0, $0.1) }
+
+        // 自动连接：扫到匹配设备立即连接（仅尝试一次）
+        if autoConnect && !autoConnectAttempted {
+            let isLastConnected = peripheral.identifier == Self.lastConnectedID
+            if isLastConnected || Self.isChameleon(peripheral) {
+                autoConnectAttempted = true
+                connect(peripheral)
+            }
         }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        connectTimeoutWork?.cancel()
         connectedPeripheral = peripheral
         isConnected = true
+        Self.lastConnectedID = peripheral.identifier
         peripheral.delegate = self
         peripheral.discoverServices([Self.serviceUUID])
     }

@@ -90,22 +90,28 @@ final class ChameleonDevice: ObservableObject {
 
     // MARK: - 设备探测
 
-    /// 探测设备型号/能力/槽数
+    /// 探测设备型号/能力/槽数（命令均带短超时，保证连接后 2~3 秒内完成）
     func probeDevice() async -> Bool {
         guard ble.isConnected else { return false }
 
-        if let r = await ble.send(.getDeviceType) {
+        async let type = ble.send(.getDeviceType, timeout: 3)
+        async let ver = ble.send(.getGitVersion, timeout: 3)
+        async let caps = ble.send(.getDeviceCapabilities, timeout: 3)
+        async let batt = ble.send(.getBatteryCharge, timeout: 3)
+        // 管线串行，实际逐个执行；短超时避免卡死
+
+        if let r = await type {
             deviceModel = String(bytes: r.data, encoding: .utf8) ?? "未知"
             capabilities.modelName = deviceModel ?? "ChameleonUltra"
         }
-        if let r = await ble.send(.getGitVersion) {
+        if let r = await ver {
             firmwareVersion = String(bytes: r.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             capabilities.firmwareVersion = firmwareVersion ?? "unknown"
         }
-        if let r = await ble.send(.getDeviceCapabilities) {
+        if let r = await caps {
             parseCapabilities(r.data)
         }
-        if let r = await ble.send(.getBatteryCharge), r.data.count >= 3 {
+        if let r = await batt, r.data.count >= 3 {
             let v = (UInt16(r.data[0]) << 8) | UInt16(r.data[1])
             let pct = Int(r.data[2])
             batteryLevel = pct
@@ -144,7 +150,7 @@ final class ChameleonDevice: ObservableObject {
         var types = [TagType](repeating: .unknown, count: count)
         var nicks = [String](repeating: "", count: count)
 
-        if let r = await ble.send(.getEnabledSlots) {
+        if let r = await ble.send(.getEnabledSlots, timeout: 3) {
             // 8 槽 → 16 字节；16 槽 → 32 字节
             let per = r.data.count / count
             for i in 0..<min(count, r.data.count / max(1, per)) {
@@ -155,7 +161,7 @@ final class ChameleonDevice: ObservableObject {
                 }
             }
         }
-        if let r = await ble.send(.getSlotInfo) {
+        if let r = await ble.send(.getSlotInfo, timeout: 3) {
             // 每槽 4 字节：hf[2] | lf[2]
             for i in 0..<min(count, r.data.count / 4) {
                 let hf = (UInt16(r.data[i * 4]) << 8) | UInt16(r.data[i * 4 + 1])
@@ -164,10 +170,10 @@ final class ChameleonDevice: ObservableObject {
                 if enabled[i] == false, hf != 0 || lf != 0 { enabled[i] = true }
             }
         }
-        if let r = await ble.send(.getAllSlotNicks) {
+        if let r = await ble.send(.getAllSlotNicks, timeout: 3) {
             parseNicks(r.data, into: &nicks, slotCount: count)
         }
-        if let r = await ble.send(.getActiveSlot), !r.data.isEmpty {
+        if let r = await ble.send(.getActiveSlot, timeout: 3), !r.data.isEmpty {
             activeSlot = Int(r.data[0])
         }
 
@@ -233,6 +239,76 @@ final class ChameleonDevice: ObservableObject {
         let r = await ble.send(.saveSlotNicks)
         return r?.status == 0x00 || r?.status == 0x68
     }
+
+    // MARK: - 手动添加 / 清空卡片
+
+    /// 槽位数据重置为默认（setSlotDataDefault）
+    func setSlotDataDefault(slot: Int, type: TagType) async -> Bool {
+        let r = await ble.send(.setSlotDataDefault, data: Payload.setSlotDataDefault(slot: slot, type: type))
+        return r?.status == 0x00 || r?.status == 0x68
+    }
+
+    /// 手动添加 IC 卡到逻辑卡位（IC number 0..<16）：设置类型 → 可选自定义 UID → 默认数据 → 启用 HF 面
+    func addIcCard(number: Int, type: TagType, uidHex: String?) async -> Bool {
+        let slot = number % capabilities.slotCount
+        guard await setSlotTagType(bank: .ic, number: number, type: type) else {
+            lastError = "设置卡类型失败"
+            return false
+        }
+        if let hex = uidHex?.trimmingCharacters(in: .whitespacesAndNewlines), !hex.isEmpty {
+            guard let uid = hexToBytes(hex), (uid.count == 4 || uid.count == 7 || uid.count == 10) else {
+                lastError = "UID 需为 4/7/10 字节（8/14/20 位 hex）"
+                return false
+            }
+            let payload = Payload.mf1SetAntiCollision(uid: uid, atqa: [0x04, 0x00], sak: uid.count == 4 ? 0x08 : 0x18, ats: [])
+            let r = await ble.send(.mf1SetAntiCollision, data: payload, timeout: 3)
+            if !(r?.status == 0x00 || r?.status == 0x68) {
+                lastError = "设置 UID 失败 status=\(r?.status ?? 0xFF)"
+            }
+        }
+        _ = await setSlotDataDefault(slot: slot, type: type)
+        _ = await setSlotEnable(physicalSlot: slot, frequency: .hf, enable: true)
+        _ = await refreshSlots()
+        return true
+    }
+
+    /// 手动添加 ID 卡（EM410X）到逻辑卡位：设置类型 → 默认数据 → 启用 LF 面
+    func addIdCard(number: Int, uidHex: String?) async -> Bool {
+        let slot = number % capabilities.slotCount
+        guard await setSlotTagType(bank: .id, number: number, type: .em410X) else {
+            lastError = "设置卡类型失败"
+            return false
+        }
+        _ = await setSlotDataDefault(slot: slot, type: .em410X)
+        _ = await setSlotEnable(physicalSlot: slot, frequency: .lf, enable: true)
+        _ = await refreshSlots()
+        return true
+    }
+
+    /// 清空物理槽指定频率面（删除卡数据）
+    func clearSlot(physicalSlot: Int, frequency: TagFrequency) async -> Bool {
+        let r = await ble.send(.deleteSlotInfo, data: Payload.deleteSlotInfo(index: physicalSlot, frequency: frequency), timeout: 3)
+        let ok = r?.status == 0x00 || r?.status == 0x68
+        _ = await refreshSlots()
+        return ok
+    }
+
+    /// hex 字符串转字节（支持空格分隔）
+    static func hexToBytes(_ s: String) -> [UInt8]? {
+        let clean = s.filter { $0.isHexDigit }
+        guard !clean.isEmpty, clean.count % 2 == 0 else { return nil }
+        var out: [UInt8] = []
+        var i = clean.startIndex
+        while i < clean.endIndex {
+            let end = clean.index(i, offsetBy: 2)
+            guard let v = UInt8(clean[i..<end], radix: 16) else { return nil }
+            out.append(v)
+            i = end
+        }
+        return out
+    }
+
+    private func hexToBytes(_ s: String) -> [UInt8]? { Self.hexToBytes(s) }
 
     // MARK: - 卡片读写（IC：Mifare Classic）
 
