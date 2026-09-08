@@ -10,13 +10,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 1) 核心算法测试（Linux/macOS 均可编译运行，无需 Xcode）
-  unit-tests:
-    name: Core Algorithm Tests
+  build-ipa:
+    name: Build IPA (unsigned)
     runs-on: macos-15
+    env:
+      HAS_SIGNING: ${{ secrets.P12_BASE64 != '' && secrets.PROFILE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Show Xcode version
+        run: |
+          ls /Applications | grep -i xcode || true
+          xcode-select -p
+          xcodebuild -version
+
+      # 1) 核心算法测试（同一 runner，节省 macOS 额度）
       - name: Compile & run core algorithm tests
         run: |
 
@@ -31,22 +39,7 @@ jobs:
             -o core_tests
           ./core_tests
 
-  # 2) 构建 IPA（优先签名；无签名 secrets 时自动降级为未签名 zip）
-  build-ipa:
-    name: Build IPA (signed or unsigned)
-    needs: unit-tests
-    runs-on: macos-15
-    env:
-      HAS_SIGNING: ${{ secrets.P12_BASE64 != '' && secrets.PROFILE_BASE64 != '' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Show Xcode version
-        run: |
-          ls /Applications | grep -i xcode || true
-          xcode-select -p
-          xcodebuild -version
-
+      # 2) 构建未签名 archive
       - name: Build unsigned archive
         run: |
 
@@ -61,9 +54,8 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
-      - name: Package unsigned IPA (fallback)
-        id: package-unsigned
-        if: env.HAS_SIGNING == 'false'
+      # 3) 打包未签名 IPA
+      - name: Package unsigned IPA
         run: |
 
           APP=build/Build/Products/Release-iphoneos/ChameleonUltra.app
@@ -72,63 +64,16 @@ jobs:
           cp -R "$APP" Payload/
           zip -r ChameleonUltra-unsigned.ipa Payload
 
-      - name: Setup signing
-        if: env.HAS_SIGNING == 'true'
-        env:
-          P12_BASE64: ${{ secrets.P12_BASE64 }}
-          PROFILE_BASE64: ${{ secrets.PROFILE_BASE64 }}
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-        run: |
-          echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
-          echo "$PROFILE_BASE64" | base64 --decode > /tmp/profile.mobileprovision
-          KEYCHAIN=$RUNNER_TEMP/build.keychain
-          security create-keychain -p x $KEYCHAIN
-          security default-keychain -s $KEYCHAIN
-          security unlock-keychain -p x $KEYCHAIN
-          security import /tmp/cert.p12 -k $KEYCHAIN -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/xcodebuild
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k x $KEYCHAIN
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
-
-      - name: Sign & package IPA
-        if: env.HAS_SIGNING == 'true'
-        env:
-          TEAM_ID: ${{ secrets.TEAM_ID }}
-          PROFILE_NAME: ${{ secrets.PROFILE_NAME }}
-          BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
-        run: |
-
-          APP=build/Build/Products/Release-iphoneos/ChameleonUltra.app
-          xcodebuild \
-            -project ChameleonUltra.xcodeproj \
-            -scheme ChameleonUltra \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
-            -allowProvisioningUpdates \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
-            build
-          rm -rf Payload
-          mkdir -p Payload
-          cp -R "$APP" Payload/
-          zip -r ChameleonUltra-signed.ipa Payload
-          codesign -dv --verbose=2 Payload/ChameleonUltra.app || true
-
+      # 4) 上传 IPA
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: ChameleonUltra-ipa
-          path: |
-            ChameleonUltra-signed.ipa
-            ChameleonUltra-unsigned.ipa
-          if-no-files-found: ignore
+          path: ChameleonUltra-unsigned.ipa
+          if-no-files-found: error
           compression-level: 0
 
+      # 5) 上传 .app bundle（调试用）
       - name: Upload .app bundle (for debugging)
         uses: actions/upload-artifact@v4
         with:
