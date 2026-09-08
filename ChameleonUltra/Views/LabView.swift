@@ -135,8 +135,8 @@ struct LabView: View {
 
         // 2) 发起 nested 采集（需固件支持 mf1NestedAcquire）
         let payload = Payload.mf1NestedAcquire(
-            keyType: attackKeyType, block: 0, key: knownKey,
-            targetKeyType: attackKeyType, targetBlock: 0
+            block: 0, keyType: attackKeyType, key: knownKey,
+            targetBlock: 0, targetKeyType: attackKeyType
         )
         guard let r = await appState.device.ble.send(.mf1NestedAcquire, data: payload, timeout: 30) else {
             appendLog("采集失败（命令无响应）")

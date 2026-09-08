@@ -94,11 +94,15 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
-        handle(region, entered: true)
+        Task { @MainActor in
+            handle(region, entered: true)
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
-        handle(region, entered: false)
+        Task { @MainActor in
+            handle(region, entered: false)
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
