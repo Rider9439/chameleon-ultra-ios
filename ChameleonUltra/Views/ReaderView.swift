@@ -94,7 +94,8 @@ struct ReaderView: View {
         resultText = ""
         defer { isReading = false }
 
-        let (uid, _) = await appState.device.scan14A() ?? ([], false)
+        let scan = await appState.device.scan14A()
+        let uid = scan?.uid ?? []
         let (data, ok) = await appState.device.readBlock(block: blockToRead, keyType: keyType, key: key)
         if ok {
             var lines = ["块 \(blockToRead) (密钥\(keyType == 0x60 ? "A" : "B")): \(data.hexPretty)"]

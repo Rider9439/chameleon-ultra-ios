@@ -61,7 +61,7 @@ struct HexTextField: View {
             .font(.system(.body, design: .monospaced))
             .textInputAutocapitalization(.characters)
             .autocorrectionDisabled()
-            .onChange(of: text) { _, newValue in
+            .onChange(of: text) { newValue in
                 let filtered = newValue.filter { $0.isHexDigit }.uppercased()
                 if let limit = byteLimit, filtered.count > limit * 2 {
                     text = String(filtered.prefix(limit * 2))

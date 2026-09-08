@@ -35,7 +35,7 @@ struct SlotsView: View {
                         .buttonStyle(.bordered)
                     }
                 }
-                Text("16 个 IC 卡位 + 16 个 ID 卡位，IC 位 \(n) 与 ID 位 \(n) 共用物理槽 \(n + 1) 的 HF/LF 面（\(appState.device.capabilities.slotCount) 槽固件）。")
+                Text("16 个 IC 卡位 + 16 个 ID 卡位：IC 位 i 与 ID 位 i 共用物理槽 i 的 HF/LF 面（\(appState.device.capabilities.slotCount) 槽固件）。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
