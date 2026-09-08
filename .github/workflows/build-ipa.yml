@@ -37,13 +37,15 @@ jobs:
     needs: unit-tests
     runs-on: macos-15
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.1.app
       HAS_SIGNING: ${{ secrets.P12_BASE64 != '' && secrets.PROFILE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Show Xcode version
-        run: xcodebuild -version
+        run: |
+          ls /Applications | grep -i xcode || true
+          xcode-select -p
+          xcodebuild -version
 
       - name: Build unsigned archive
         run: |
