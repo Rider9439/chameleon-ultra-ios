@@ -38,6 +38,7 @@ jobs:
     runs-on: macos-15
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.1.app
+      HAS_SIGNING: ${{ secrets.P12_BASE64 != '' && secrets.PROFILE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -60,7 +61,7 @@ jobs:
 
       - name: Package unsigned IPA (fallback)
         id: package-unsigned
-        if: ${{ !secrets.P12_BASE64 || !secrets.PROFILE_BASE64 }}
+        if: env.HAS_SIGNING == 'false'
         run: |
           cd ChameleonUltra_iOS
           APP=build/Build/Products/Release-iphoneos/ChameleonUltra.app
@@ -70,7 +71,7 @@ jobs:
           zip -r ChameleonUltra-unsigned.ipa Payload
 
       - name: Setup signing
-        if: ${{ secrets.P12_BASE64 && secrets.PROFILE_BASE64 }}
+        if: env.HAS_SIGNING == 'true'
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           PROFILE_BASE64: ${{ secrets.PROFILE_BASE64 }}
@@ -88,7 +89,7 @@ jobs:
           cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
 
       - name: Sign & package IPA
-        if: ${{ secrets.P12_BASE64 && secrets.PROFILE_BASE64 }}
+        if: env.HAS_SIGNING == 'true'
         env:
           TEAM_ID: ${{ secrets.TEAM_ID }}
           PROFILE_NAME: ${{ secrets.PROFILE_NAME }}
